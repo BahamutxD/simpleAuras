@@ -1,0 +1,3 @@
+<Bindings>
+	<Binding name="RAIDASSIGNMENTS_TARGET_MARK" header="RAIDASSIGNMENTS">RAIDASSIGNMENTS_TARGET_MARK();</Binding>
+</Bindings>
