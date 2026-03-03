@@ -7,3 +7,5 @@
 init.lua
 core.lua
 gui.lua
+libs\libdebuff_integration.lua
+

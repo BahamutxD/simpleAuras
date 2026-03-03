@@ -38,8 +38,7 @@ sA = sA or {
   draggers = {}, 
   activeAuras = {},
   reactiveTimers = {},      -- [spellName] = {expiry, warnedOnce}
-  itemIDCache = {},         -- [itemName] = itemID (for cooldown tracking)
-  igniteData = {}           -- [targetGUID] = {stacks, damage, expiry}
+  itemIDCache = {}          -- [itemName] = itemID (for cooldown tracking)
 }
 
 -- Get version from .toc file
@@ -234,217 +233,6 @@ if sA.SuperWoW then
   end)
 end
 
----------------------------------------------------
--- Ignite Tracking
--- Tracks Ignite debuff stacks, per-tick damage, and remaining duration
--- for all targets, keyed by GUID (SuperWoW) or name (fallback).
--- Only the current target's data is shown via UpdateIgniteData().
---
--- sA.igniteData[guid] = { stacks, damage, expiry }
----------------------------------------------------
-
--- Ignite spell IDs (the debuff itself, rank 1 only in 1.12)
-local IGNITE_DEBUFF_ID = 12654
--- Duration is always 4 seconds per ignite application
-local IGNITE_DURATION = 4
-
--- All mage fire spells that can proc ignite (all ranks)
-local IGNITE_FIRE_SPELL_IDS = {
-  -- Blast Wave
-  [11113]=true,[13018]=true,[13019]=true,[13020]=true,[13021]=true,
-  -- Fire Blast
-  [2136]=true,[2137]=true,[2138]=true,[8412]=true,[8413]=true,[10197]=true,[10199]=true,
-  -- Fireball
-  [133]=true,[143]=true,[145]=true,[3140]=true,[8400]=true,[8401]=true,[8402]=true,
-  [10148]=true,[10149]=true,[10150]=true,[10151]=true,[25306]=true,
-  -- Flamestrike
-  [2120]=true,[2121]=true,[8422]=true,[8423]=true,[10215]=true,[10216]=true,
-  -- Pyroblast
-  [11366]=true,[12505]=true,[12522]=true,[12523]=true,[12524]=true,
-  [12525]=true,[12526]=true,[12527]=true,[18809]=true,
-  -- Scorch
-  [2948]=true,[8444]=true,[8445]=true,[8446]=true,[10205]=true,[10206]=true,[10207]=true,
-}
-
-local sAIgniteTracker = CreateFrame("Frame")
-
-if sA.SuperWoW then
-  -- SuperWoW path: use structured events for GUID-based stack/expire tracking
-  -- but still parse chat for damage since SPELL_DAMAGE_EVENT doesn't fire for DoT ticks
-
-  sAIgniteTracker:RegisterEvent("DEBUFF_ADDED_OTHER")
-  sAIgniteTracker:RegisterEvent("DEBUFF_REMOVED_OTHER")
-  sAIgniteTracker:RegisterEvent("UNIT_DIED")
-  -- Chat events for damage value (works in both SuperWoW and vanilla)
-  sAIgniteTracker:RegisterEvent("CHAT_MSG_SPELL_PERIODIC_CREATURE_DAMAGE")
-  sAIgniteTracker:RegisterEvent("CHAT_MSG_SPELL_PERIODIC_HOSTILEPLAYER_DAMAGE")
-  sAIgniteTracker:RegisterEvent("CHAT_MSG_SPELL_PERIODIC_SELF_DAMAGE")
-
-  local PAT_IGNITE_TICK       = "^(.+) suffers (%d+) Fire damage from (.+) Ignite"
-  local PAT_IGNITE_TICK_SELF  = "^You suffer (%d+) Fire damage from (.+) Ignite"
-
-  sAIgniteTracker:SetScript("OnEvent", function()
-    if not sA.SettingsLoaded then return end
-    sA.igniteData = sA.igniteData or {}
-
-    if event == "DEBUFF_ADDED_OTHER" then
-      -- arg1=targetGUID, arg2=slot, arg3=spellId, arg4=stacks
-      local targetGUID = arg1
-      local spellId    = arg3
-      local stacks     = arg4
-
-      if spellId == IGNITE_DEBUFF_ID and targetGUID then
-        targetGUID = gsub(targetGUID, "^0x", "")
-        local existing = sA.igniteData[targetGUID] or {}
-        sA.igniteData[targetGUID] = {
-          stacks = stacks or 1,
-          damage = existing.damage or 0,
-          expiry = GetTime() + IGNITE_DURATION,
-        }
-        sA:UpdateIgniteData()
-      end
-
-    elseif event == "DEBUFF_REMOVED_OTHER" then
-      local targetGUID = arg1
-      local spellId    = arg3
-
-      if spellId == IGNITE_DEBUFF_ID and targetGUID then
-        targetGUID = gsub(targetGUID, "^0x", "")
-        sA.igniteData[targetGUID] = nil
-        sA:UpdateIgniteData()
-      end
-
-    elseif event == "CHAT_MSG_SPELL_PERIODIC_CREATURE_DAMAGE"
-        or event == "CHAT_MSG_SPELL_PERIODIC_HOSTILEPLAYER_DAMAGE"
-        or event == "CHAT_MSG_SPELL_PERIODIC_SELF_DAMAGE" then
-      local msg = arg1
-      local amount = nil
-
-      local _, _, target, dmg = string.find(msg, PAT_IGNITE_TICK)
-      if target and dmg then
-        amount = tonumber(dmg)
-      else
-        local _, _, dmg2 = string.find(msg, PAT_IGNITE_TICK_SELF)
-        if dmg2 then amount = tonumber(dmg2) end
-      end
-
-      if amount then
-        local _, tguid = UnitExists("target")
-        if tguid then tguid = gsub(tguid, "^0x", "") end
-
-        -- Prefer the GUID key if it already exists (set by DEBUFF_ADDED_OTHER).
-        -- Fall back to name key (non-SuperWoW entries or first-tick race).
-        -- IMPORTANT: never fall back to current tguid if no existing entry is found —
-        -- that would store the tick under the wrong (currently selected) target's GUID.
-        local key
-        if tguid and sA.igniteData[tguid] then
-          key = tguid
-        elseif target and sA.igniteData[target] then
-          key = target
-        else
-          -- No existing entry for this tick's target — store under the name from the
-          -- chat message only.  Do NOT use tguid here: the current target may be a
-          -- completely different unit that has never had Ignite.
-          key = target
-        end
-
-        if key then
-          local existing = sA.igniteData[key] or {}
-          sA.igniteData[key] = {
-            stacks = existing.stacks or 1,
-            damage = amount,
-            expiry = GetTime() + IGNITE_DURATION,
-          }
-          sA:UpdateIgniteData()
-        end
-      end
-
-    elseif event == "UNIT_DIED" then
-      local guid = arg1
-      if guid then
-        guid = gsub(guid, "^0x", "")
-        if sA.igniteData[guid] then
-          sA.igniteData[guid] = nil
-          sA:UpdateIgniteData()
-        end
-      end
-    end
-  end)
-
-else
-  -- Fallback path: parse chat combat log messages (no SuperWoW)
-  -- Tracks ignite by target NAME (less precise but workable for single target play)
-  sAIgniteTracker:RegisterEvent("CHAT_MSG_SPELL_PERIODIC_CREATURE_DAMAGE")
-  sAIgniteTracker:RegisterEvent("CHAT_MSG_SPELL_PERIODIC_HOSTILEPLAYER_DAMAGE")
-  sAIgniteTracker:RegisterEvent("CHAT_MSG_SPELL_AURA_GONE_OTHER")
-  sAIgniteTracker:RegisterEvent("CHAT_MSG_COMBAT_HOSTILE_DEATH")
-
-  -- Patterns
-  local PAT_IGNITE_TICK   = "^(.+) suffers (%d+) Fire damage from (.+) Ignite"
-  local PAT_IGNITE_GAINS  = "^(.+) gains Ignite"
-  local PAT_IGNITE_AFFLICT= "^(.+) is afflicted by Ignite(.*)"
-  local PAT_IGNITE_FADES  = "^Ignite fades from (.+)%."
-  local PAT_DEATH_SLAIN   = "(.+) is slain by (.+)"
-  local PAT_DEATH_YOU     = "You have slain (.+)"
-  local PAT_DEATH_DIES    = "(.+) dies%."
-
-  sAIgniteTracker:SetScript("OnEvent", function()
-    if not sA.SettingsLoaded then return end
-    sA.igniteData = sA.igniteData or {}
-    local msg = arg1
-
-    if event == "CHAT_MSG_SPELL_PERIODIC_CREATURE_DAMAGE"
-    or event == "CHAT_MSG_SPELL_PERIODIC_HOSTILEPLAYER_DAMAGE" then
-
-      -- Ignite tick: capture damage and refresh timer
-      local _, _, target, dmg = string.find(msg, PAT_IGNITE_TICK)
-      if target and dmg then
-        local existing = sA.igniteData[target] or {}
-        sA.igniteData[target] = {
-          stacks = existing.stacks or 1,
-          damage = tonumber(dmg) or 0,
-          expiry = GetTime() + IGNITE_DURATION,
-        }
-        sA:UpdateIgniteData()
-        return
-      end
-
-      -- Ignite applied (afflicted / gains) — stack count from suffix "(N)"
-      local _, _, afflicted, stackInfo = string.find(msg, PAT_IGNITE_AFFLICT)
-      if not afflicted then
-        _, _, afflicted, stackInfo = string.find(msg, PAT_IGNITE_GAINS)
-      end
-      if afflicted then
-        local _, _, stackNum = string.find(stackInfo or "", "(%d+)")
-        local stacks = stackNum and tonumber(stackNum) or 1
-        local existing = sA.igniteData[afflicted] or {}
-        sA.igniteData[afflicted] = {
-          stacks = stacks,
-          damage = existing.damage or 0,
-          expiry = GetTime() + IGNITE_DURATION,
-        }
-        sA:UpdateIgniteData()
-      end
-
-    elseif event == "CHAT_MSG_SPELL_AURA_GONE_OTHER" then
-      local _, _, fadeTarget = string.find(msg, PAT_IGNITE_FADES)
-      if fadeTarget then
-        sA.igniteData[fadeTarget] = nil
-        sA:UpdateIgniteData()
-      end
-
-    elseif event == "CHAT_MSG_COMBAT_HOSTILE_DEATH" then
-      local _, _, dead = string.find(msg, PAT_DEATH_SLAIN)
-      if not dead then _, _, dead = string.find(msg, PAT_DEATH_YOU) end
-      if not dead then _, _, dead = string.find(msg, PAT_DEATH_DIES) end
-      if dead and sA.igniteData[dead] then
-        sA.igniteData[dead] = nil
-        sA:UpdateIgniteData()
-      end
-    end
-  end)
-end
-
 -- Timed updates (RENDERING ONLY - fixed 20 FPS)
 local sAEvent = CreateFrame("Frame", "sAEvent", UIParent)
 sAEvent:SetScript("OnUpdate", function()
@@ -552,8 +340,6 @@ sADataUpdate:SetScript("OnUpdate", function()
   -- Update cooldown and reactive states (poison has its own 3-second timer)
   sA:UpdateCooldownData()
   sA:UpdateReactiveData()
-  -- Ignite: refresh which target's data is currently displayed
-  sA:UpdateIgniteData()
 end)
 
 -- Poison data updates (fixed 3-second interval, independent of refresh rate)
@@ -623,8 +409,6 @@ sAAuraTracker:SetScript("OnEvent", function()
     if UnitExists("target") then
       sA:UpdateAuraDataForUnit("Target")
     end
-    -- Ignite: immediately switch displayed data to new target
-    sA:UpdateIgniteData()
     
   elseif event == "SPELL_UPDATE_COOLDOWN" or event == "BAG_UPDATE" or event == "BAG_UPDATE_COOLDOWN" then
     -- Update all cooldown-type auras (spells and items)
@@ -894,41 +678,6 @@ SlashCmdList["sA"] = function(msg)
 		return
 	end
 	
-
-	-- ignite debug
-	if cmd == "ignite" then
-		sA:Msg("=== Ignite Debug ===")
-		sA:Msg("igniteData entries:")
-		local count = 0
-		for k, v in pairs(sA.igniteData or {}) do
-			count = count + 1
-			sA:Msg("  ["..tostring(k).."] stacks="..tostring(v.stacks).." dmg="..tostring(v.damage).." expiry="..tostring(v.expiry and string.format("%.1f", v.expiry - GetTime()).."s" or "nil"))
-		end
-		if count == 0 then sA:Msg("  (empty)") end
-		sA:Msg("activeAuras (Ignite type):")
-		local found = 0
-		for id, aura in ipairs(simpleAuras.auras or {}) do
-			if aura and aura.type == "Ignite" then
-				found = found + 1
-				local d = sA.activeAuras[id]
-				if d then
-					sA:Msg("  [aura "..id.."] name='"..tostring(aura.name).."' active="..tostring(d.active).." stacks="..tostring(d.stacks).." dmg="..tostring(d.damage).." expiry="..tostring(d.expiry and string.format("%.1f", d.expiry - GetTime()).."s" or "nil"))
-				else
-					sA:Msg("  [aura "..id.."] name='"..tostring(aura.name).."' no activeAuras entry")
-				end
-			end
-		end
-		if found == 0 then
-			sA:Msg("  (none found - listing all aura types:)")
-			for id, aura in ipairs(simpleAuras.auras or {}) do
-				if aura then sA:Msg("  [aura "..id.."] type='"..tostring(aura.type).."' name='"..tostring(aura.name).."'") end
-			end
-		end
-		local _, tguid = UnitExists("target")
-		sA:Msg("target GUID: "..tostring(tguid))
-		sA:Msg("target name: "..tostring(UnitName("target")))
-		return
-	end
 
 	-- help or unknown command fallback
 	sA:Msg("Usage:")

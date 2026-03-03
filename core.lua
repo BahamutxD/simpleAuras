@@ -217,96 +217,6 @@ function sA:GetPoisonInfo(unit)
 end
 
 -------------------------------------------------
--- LibDebuff integration
--- Returns: timeleft, duration, stacks, texture
--- Works for ANY debuff tracked by libdebuff including
--- proc-based debuffs like Fire Vulnerability, ISB, etc.
--- Requires pfUI + libdebuff (Nampower 2.38+).
--------------------------------------------------
-function sA:GetLibDebuffInfo(spellName, unit)
-  if unit ~= "Target" then return nil, nil, nil, nil end
-
-  local libdebuff = pfUI and pfUI.api and pfUI.api.libdebuff
-  if not libdebuff then return nil, nil, nil, nil end
-
-  if not UnitExists("target") then return nil, nil, nil, nil end
-
-  -- Iterate display slots using the public libdebuff:UnitDebuff() API.
-  -- Returns: name, rank, texture, stacks, dtype, duration, timeleft, caster
-  local i = 1
-  while true do
-    local name, rank, texture, stacks, dtype, duration, timeleft, caster = libdebuff:UnitDebuff("target", i)
-    if not name then break end
-    if name == spellName then
-      -- timeleft of -1 means unknown, treat as active with no timer
-      local tl = (timeleft and timeleft >= 0) and timeleft or nil
-      local dur = (duration and duration > 0) and duration or nil
-      return tl, dur, stacks, texture
-    end
-    i = i + 1
-  end
-
-  return nil, nil, nil, nil
-end
-
--------------------------------------------------
--- Update cached LibDebuff aura data for all
--- LibDebuff-type auras targeting "Target"
--- Called by UpdateAuraDataForUnit("Target")
--------------------------------------------------
-function sA:UpdateLibDebuffData()
-  if not simpleAuras or not simpleAuras.auras then return end
-  local libdebuff = pfUI and pfUI.api and pfUI.api.libdebuff
-  -- LibDebuff type can work even without pfUI.api.libdebuff as long as tables exist
-  local hasLibDebuff = (pfUI and pfUI.libdebuff_own) ~= nil
-
-  local currentTime = GetTime()
-
-  for id, aura in ipairs(simpleAuras.auras) do
-    if aura and aura.name and aura.name ~= "" and aura.type == "LibDebuff" then
-
-      sA.activeAuras[id] = sA.activeAuras[id] or {
-        active = false, expiry = nil, stacks = 0, icon = nil, lastScan = 0
-      }
-
-      if not hasLibDebuff or not UnitExists("target") then
-        sA.activeAuras[id].active = false
-        sA.activeAuras[id].expiry = nil
-      else
-        local timeleft, duration, stacks, texture = self:GetLibDebuffInfo(aura.name, "Target")
-
-        -- GetLibDebuffInfo returns nil,nil,nil,nil when NOT found.
-        -- When found, timeleft may legitimately be nil (unknown duration) but texture will exist.
-        local found = (texture ~= nil) or (timeleft ~= nil)
-
-        if found then
-          local expiry = nil
-          if timeleft and timeleft > 0 and duration and duration > 0 then
-            expiry = currentTime + timeleft
-          end
-          sA.activeAuras[id].active = true
-          sA.activeAuras[id].expiry = expiry
-          sA.activeAuras[id].stacks = stacks or 0
-          sA.activeAuras[id].lastScan = currentTime
-
-          if texture then
-            sA.activeAuras[id].icon = texture
-            if aura.autodetect == 1 and aura.texture ~= texture then
-              aura.texture = texture
-              simpleAuras.auras[id].texture = texture
-            end
-          end
-        else
-          sA.activeAuras[id].active = false
-          sA.activeAuras[id].expiry = nil
-          sA.activeAuras[id].lastScan = currentTime
-        end
-      end
-    end
-  end
-end
-
--------------------------------------------------
 -- Reactive spell info (proc-based abilities)
 -- Returns: spellID (index in spellbook), texture
 -------------------------------------------------
@@ -499,61 +409,6 @@ function sA:UpdatePoisonData()
         sA.activeAuras[id].lastUpdate = currentTime
         sA.activeAuras[id].lastScan = currentTime
         -- Note: sA.activeAuras[id].icon is preserved from last scan
-      end
-    end
-  end
-end
-
--------------------------------------------------
--- Ignite tracking
--- sA.igniteData[targetGUID] = { stacks, damage, expiry }
--- Only the current target's data is shown in the aura display.
--- Populated by event listeners in init.lua.
--- Called from UpdateAuraDataForUnit("Target") and on PLAYER_TARGET_CHANGED.
--------------------------------------------------
-function sA:UpdateIgniteData()
-  if not simpleAuras or not simpleAuras.auras then return end
-
-  local currentTime = GetTime()
-
-  -- Resolve current target GUID and name
-  local targetGUID = nil
-  local targetName = nil
-  if UnitExists("target") then
-    local _, guid = UnitExists("target")
-    if guid then
-      targetGUID = string.gsub(guid, "^0x", "")
-    end
-    targetName = UnitName("target")
-  end
-
-  for id, aura in ipairs(simpleAuras.auras) do
-    if aura and aura.name and aura.name ~= "" and aura.type == "Ignite" then
-
-      sA.activeAuras[id] = sA.activeAuras[id] or {
-        active = false, expiry = nil, stacks = 0, damage = 0, icon = nil, lastScan = 0
-      }
-
-      -- Look up by GUID first, then fall back to target name
-      local state = (targetGUID and sA.igniteData and sA.igniteData[targetGUID])
-               or   (targetName and sA.igniteData and sA.igniteData[targetName])
-
-      if state and state.expiry and state.expiry > currentTime then
-        -- If we found data by name but have a GUID, migrate it to GUID key
-        if targetGUID and targetName and sA.igniteData[targetName] and not sA.igniteData[targetGUID] then
-          sA.igniteData[targetGUID] = sA.igniteData[targetName]
-          sA.igniteData[targetName] = nil
-        end
-        sA.activeAuras[id].active  = true
-        sA.activeAuras[id].expiry  = state.expiry
-        sA.activeAuras[id].stacks  = state.stacks or 0
-        sA.activeAuras[id].damage  = state.damage or 0
-        sA.activeAuras[id].icon    = aura.texture
-        sA.activeAuras[id].lastScan = currentTime
-      else
-        sA.activeAuras[id].active  = false
-        sA.activeAuras[id].expiry  = nil
-        sA.activeAuras[id].lastScan = currentTime
       end
     end
   end
@@ -761,14 +616,6 @@ local function CreateAuraFrame(id)
   f.stackstext:SetFont(FONT, 10, "OUTLINE")
   f.stackstext:SetPoint("CENTER", f, "CENTER", 0, 0)
 
-  -- Extra text field used by Ignite type to show per-tick damage
-  -- Hidden for all other aura types
-  f.damagetext = f:CreateFontString(nil, "OVERLAY")
-  f.damagetext:SetFont(FONT, 14, "OUTLINE")
-  f.damagetext:SetPoint("CENTER", f, "CENTER", 0, 0)
-  f.damagetext:SetTextColor(1.0, 0.82, 0.0, 1)  -- gold, same as durationtext
-  f.damagetext:Hide()
-
   return f
 end
 
@@ -852,7 +699,6 @@ function sA:InitializeAuraCache()
   self:UpdateCooldownData()
   self:UpdateReactiveData()
   self:UpdatePoisonData()
-  self:UpdateIgniteData()
 end
 
 -------------------------------------------------
@@ -865,15 +711,12 @@ end
 -------------------------------------------------
 function sA:UpdateAuraDataForUnit(unitFilter)
   if not simpleAuras or not simpleAuras.auras then return end
-
-  -- LibDebuff-type auras always track the target; refresh on any unit event
-  self:UpdateLibDebuffData()
   
   local currentTime = GetTime()
   
   for id, aura in ipairs(simpleAuras.auras) do
-    -- Only process auras for this unit (skip Cooldown, Reactive, Poison, and LibDebuff - they have their own handlers)
-    if aura and aura.name and aura.name ~= "" and aura.unit == unitFilter and aura.type ~= "Cooldown" and aura.type ~= "Reactive" and aura.type ~= "Poison" and aura.type ~= "LibDebuff" then
+    -- Only process auras for this unit (skip Cooldown, Reactive, and Poison - they have their own handlers)
+    if aura and aura.name and aura.name ~= "" and aura.unit == unitFilter and aura.type ~= "Cooldown" and aura.type ~= "Reactive" and aura.type ~= "Poison" then
       
       -- Initialize cache entry
       sA.activeAuras[id] = sA.activeAuras[id] or {
@@ -1033,14 +876,13 @@ function sA:UpdateAuras()
     if aura and aura.name then
       local show, icon, duration, stacks
       local currentDuration, currentStacks, currentDurationtext, spellID = 600, 20, "", nil
-      local currentIgniteDamage = 0
 
       local frame     = self.frames[id]     or CreateAuraFrame(id)
       local dualframe = self.dualframes[id] or (aura.dual == 1 and CreateDualFrame(id))
       local dragger   = self.draggers[id]   or CreateDraggerFrame(id, frame)
       self.frames[id] = frame
       self.draggers[id] = dragger
-      if aura.dual == 1 and aura.type ~= "Cooldown" and aura.type ~= "Reactive" and aura.type ~= "LibDebuff" then self.dualframes[id] = dualframe end
+      if aura.dual == 1 and aura.type ~= "Cooldown" and aura.type ~= "Reactive" then self.dualframes[id] = dualframe end
       
       local isEnabled = (aura.enabled == nil or aura.enabled == 1)
       local shouldShow
@@ -1058,29 +900,11 @@ function sA:UpdateAuras()
         
         if conditionsMet then
           -- Check for target existence if required by the aura
-          -- LibDebuff always targets "target" regardless of aura.unit field
-          local targetCheckPassed = (aura.type == "LibDebuff" and hasTarget) or (aura.unit ~= "Target" or hasTarget)
+          local targetCheckPassed = (aura.unit ~= "Target" or hasTarget)
           
           if targetCheckPassed then
             -- Get aura data (icon indicates presence)
-            if aura.type == "LibDebuff" then
-              -- LibDebuff: use cached data updated by UpdateLibDebuffData()
-              local auraData = sA.activeAuras[id]
-              if auraData and auraData.active then
-                icon = auraData.icon or aura.texture
-                if auraData.expiry then
-                  duration = auraData.expiry - GetTime()
-                  if duration <= 0 then duration = nil end
-                else
-                  duration = nil
-                end
-                stacks = auraData.stacks or 0
-              else
-                icon = nil
-                duration = nil
-                stacks = 0
-              end
-            elseif aura.type == "Reactive" then
+            if aura.type == "Reactive" then
               -- Reactive spells use cached data from HandleReactiveActivation
               local auraData = sA.activeAuras[id]
               if auraData and auraData.active and auraData.expiry and auraData.expiry > GetTime() then
@@ -1109,24 +933,6 @@ function sA:UpdateAuras()
                 duration = nil
                 stacks = 0
               end
-            elseif aura.type == "Ignite" then
-              -- Ignite: cached per-target data, displayed for current target only
-              local auraData = sA.activeAuras[id]
-              if auraData and auraData.active then
-                icon = aura.texture
-                if auraData.expiry then
-                  duration = auraData.expiry - GetTime()
-                  if duration <= 0 then duration = nil end
-                else
-                  duration = nil
-                end
-                stacks = auraData.stacks or 0
-                currentIgniteDamage = auraData.damage or 0
-              else
-                icon = nil
-                duration = nil
-                stacks = 0
-              end
             else
               -- Buff/Debuff/Cooldown: get from API
               if sA.SuperWoW then
@@ -1142,8 +948,8 @@ function sA:UpdateAuras()
             if aura.type == "Cooldown" then
               local onCooldown = duration and duration > 0
               show = (((aura.showCD == "No CD" or aura.showCD == "Always") and not onCooldown) or ((aura.showCD == "CD" or aura.showCD == "Always") and onCooldown)) and 1 or 0
-            elseif aura.type == "LibDebuff" or aura.type == "Reactive" or aura.type == "Poison" or aura.type == "Ignite" then
-              -- For these types: show when present (no invert logic)
+            elseif aura.type == "Reactive" or aura.type == "Poison" then
+              -- For reactive spells and poisons: show when present
               show = auraIsPresent
             elseif aura.invert == 1 then
               show = 1 - auraIsPresent
@@ -1164,20 +970,7 @@ function sA:UpdateAuras()
 
       if shouldShow then
         -- Get fresh aura data only if we are going to show it
-        if aura.type == "LibDebuff" then
-          -- LibDebuff: use cached data (updated by UpdateLibDebuffData)
-          local auraData = sA.activeAuras[id]
-          if auraData and auraData.active then
-            icon = auraData.icon or aura.texture
-            if auraData.expiry then
-              duration = auraData.expiry - GetTime()
-              if duration <= 0 then duration = nil end
-            else
-              duration = nil
-            end
-            stacks = auraData.stacks or 0
-          end
-        elseif aura.type == "Reactive" then
+        if aura.type == "Reactive" then
           -- Reactive: use cached data (updated by COMBAT_TEXT_UPDATE events)
           local auraData = sA.activeAuras[id]
           if auraData and auraData.active and auraData.expiry and auraData.expiry > GetTime() then
@@ -1197,20 +990,6 @@ function sA:UpdateAuras()
               duration = nil
             end
             stacks = auraData.stacks or 0
-          end
-        elseif aura.type == "Ignite" then
-          -- Ignite: cached per-target data displayed for current target only
-          local auraData = sA.activeAuras[id]
-          if auraData and auraData.active then
-            icon = aura.texture
-            if auraData.expiry then
-              duration = auraData.expiry - GetTime()
-              if duration <= 0 then duration = nil end
-            else
-              duration = nil
-            end
-            stacks = auraData.stacks or 0   -- ignite stack count (1-5)
-            currentIgniteDamage = auraData.damage or 0  -- per-tick damage
           end
         elseif not (icon or aura.name) then -- Data might not have been fetched in /sa mode
 		  spellID = nil
@@ -1269,72 +1048,31 @@ function sA:UpdateAuras()
         end
         
         frame.texture:SetTexture(textureToUse)
-
-        if aura.type == "Ignite" then
-          -- Ignite: three text fields stacked top→bottom:
-          --   damagetext   (gold, top)      = per-tick fire damage — always shown when available
-          --   durationtext (gold/red, mid)  = remaining time countdown (Show Duration checkbox)
-          --   stackstext   (white, bottom)  = ignite stack count 1-5 (Show Stacks checkbox)
-          local stkFontSize = (aura.stacksSize or 14) * scale
-          local dmgFontSize = stkFontSize
-          local durFontSize = math.max(10, (aura.durationSize or 20) * textscale * 0.65)
-
-          -- Damage (top) — show whenever we have a non-zero value, no checkbox needed
-          if currentIgniteDamage and currentIgniteDamage > 0 then
-            frame.damagetext:SetFont(FONT, dmgFontSize, "OUTLINE")
-            frame.damagetext:SetText(currentIgniteDamage)
-            frame.damagetext:SetPoint("CENTER", frame, "CENTER", 0, 14 * scale)
-            frame.damagetext:Show()
-          else
-            frame.damagetext:SetText("")
-            frame.damagetext:Hide()
-          end
-
-          -- Timer (middle) — Show Duration checkbox
-          if aura.duration == 1 and currentDuration then
-            frame.durationtext:SetFont(FONT, durFontSize, "OUTLINE")
-            frame.durationtext:SetText(currentDurationtext)
-            frame.durationtext:SetPoint("CENTER", frame, "CENTER", 0, 0)
-          else
-            frame.durationtext:SetText("")
-          end
-
-          -- Stack count (bottom) — Show Stacks checkbox
-          if aura.stacks == 1 and currentStacks and currentStacks > 0 then
-            frame.stackstext:SetFont(FONT, stkFontSize, "OUTLINE")
-            frame.stackstext:SetText(currentStacks)
-            frame.stackstext:SetPoint("CENTER", frame, "CENTER", 0, -14 * scale)
-          else
-            frame.stackstext:SetText("")
-          end
-
+        frame.durationtext:SetText((aura.duration == 1 and (sA.SuperWoW or aura.unit == "Player" or aura.type == "Cooldown" or aura.type == "Reactive" or aura.type == "Poison")) and currentDurationtext or "")
+        frame.stackstext:SetText((aura.stacks == 1) and currentStacks or "")
+        
+        -- Position duration and stacks based on settings
+        if aura.duration == 1 and aura.stacks == 1 then
+          -- Both enabled: move duration up, stacks down
+          frame.durationtext:SetPoint("CENTER", frame, "CENTER", 0, 8)
+          frame.stackstext:SetPoint("CENTER", frame, "CENTER", 0, -8)
+          local durationFontSize = (aura.durationSize or 20) * textscale
+          frame.durationtext:SetFont(FONT, durationFontSize, "OUTLINE")
+        elseif aura.duration == 1 then
+          -- Only duration enabled: center duration
+          frame.durationtext:SetPoint("CENTER", frame, "CENTER", 0, 0)
+          frame.stackstext:SetPoint("CENTER", frame, "CENTER", 0, 0)
+          local durationFontSize = (aura.durationSize or 20) * textscale
+          frame.durationtext:SetFont(FONT, durationFontSize, "OUTLINE")
         else
-          -- All other types: hide damagetext, use normal two-slot layout
-          if frame.damagetext then frame.damagetext:SetText("") frame.damagetext:Hide() end
-
-          frame.durationtext:SetText((aura.duration == 1 and (sA.SuperWoW or aura.unit == "Player" or aura.type == "Cooldown" or aura.type == "Reactive" or aura.type == "Poison" or aura.type == "LibDebuff")) and currentDurationtext or "")
-          frame.stackstext:SetText((aura.stacks == 1) and currentStacks or "")
-
-          -- Position duration and stacks based on settings
-          if aura.duration == 1 and aura.stacks == 1 then
-            frame.durationtext:SetPoint("CENTER", frame, "CENTER", 0, 8)
-            frame.stackstext:SetPoint("CENTER", frame, "CENTER", 0, -8)
-            local durationFontSize = (aura.durationSize or 20) * textscale
-            frame.durationtext:SetFont(FONT, durationFontSize, "OUTLINE")
-          elseif aura.duration == 1 then
-            frame.durationtext:SetPoint("CENTER", frame, "CENTER", 0, 0)
-            frame.stackstext:SetPoint("CENTER", frame, "CENTER", 0, 0)
-            local durationFontSize = (aura.durationSize or 20) * textscale
-            frame.durationtext:SetFont(FONT, durationFontSize, "OUTLINE")
-          else
-            frame.durationtext:SetPoint("CENTER", frame, "CENTER", 0, 0)
-            frame.stackstext:SetPoint("CENTER", frame, "CENTER", 0, 0)
-          end
-
-          if aura.stacks == 1 then
-            local stacksFontSize = (aura.stacksSize or 14) * scale
-            frame.stackstext:SetFont(FONT, stacksFontSize, "OUTLINE")
-          end
+          -- Duration disabled: center stacks (if enabled)
+          frame.durationtext:SetPoint("CENTER", frame, "CENTER", 0, 0)
+          frame.stackstext:SetPoint("CENTER", frame, "CENTER", 0, 0)
+        end
+        
+        if aura.stacks == 1 then 
+          local stacksFontSize = (aura.stacksSize or 14) * scale
+          frame.stackstext:SetFont(FONT, stacksFontSize, "OUTLINE") 
         end
 
         -- Check for equipped item warning (should be equipped but in bag)
@@ -1360,7 +1098,7 @@ function sA:UpdateAuras()
 
         local durationcolor = {1.0, 0.82, 0.0, alpha}
         local stackcolor    = {1, 1, 1, alpha}
-        if (sA.SuperWoW or aura.unit == "Player" or aura.type == "Cooldown" or aura.type == "Reactive" or aura.type == "Poison" or aura.type == "LibDebuff" or aura.type == "Ignite") and (currentDuration and currentDuration <= (aura.lowdurationvalue or 5)) and currentDurationtext ~= "learning" then
+        if (sA.SuperWoW or aura.unit == "Player" or aura.type == "Cooldown" or aura.type == "Reactive" or aura.type == "Poison") and (currentDuration and currentDuration <= (aura.lowdurationvalue or 5)) and currentDurationtext ~= "learning" then
           durationcolor = {1, 0, 0, alpha}
         end
         frame.durationtext:SetTextColor(unpack(durationcolor))
@@ -1370,7 +1108,7 @@ function sA:UpdateAuras()
         -------------------------------------------------
         -- Dual frame
         -------------------------------------------------
-        if aura.dual == 1 and aura.type ~= "Cooldown" and aura.type ~= "Reactive" and aura.type ~= "Poison" and aura.type ~= "LibDebuff" and aura.type ~= "Ignite" and dualframe then
+        if aura.dual == 1 and aura.type ~= "Cooldown" and aura.type ~= "Reactive" and aura.type ~= "Poison" and dualframe then
           dualframe:SetPoint("CENTER", UIParent, "CENTER", -(aura.xpos or 0), aura.ypos or 0)
           dualframe:SetFrameLevel(aura.layer or 0)
           dualframe:SetWidth(48 * scale)
@@ -1381,7 +1119,7 @@ function sA:UpdateAuras()
           else
             dualframe.texture:SetVertexColor(r, g, b, alpha)
           end
-          dualframe.durationtext:SetText((aura.duration == 1 and (sA.SuperWoW or aura.unit == "Player" or aura.type == "Cooldown" or aura.type == "Reactive" or aura.type == "Poison" or aura.type == "LibDebuff")) and currentDurationtext or "")
+          dualframe.durationtext:SetText((aura.duration == 1 and (sA.SuperWoW or aura.unit == "Player" or aura.type == "Cooldown" or aura.type == "Reactive" or aura.type == "Poison")) and currentDurationtext or "")
           dualframe.stackstext:SetText((aura.stacks == 1) and currentStacks or "")
           
           -- Position duration and stacks based on settings (same as main frame)

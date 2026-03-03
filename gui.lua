@@ -820,7 +820,7 @@ function sA:EditAura(id)
         menu:SetFrameStrata("DIALOG")
         menu:SetFrameLevel(10)
         menu:SetWidth(80)
-        menu:SetHeight(140)
+        menu:SetHeight(100)
         sA:SkinFrame(menu, {0.15,0.15,0.15,1})
         menu:Hide()
         ed.typeButton.menu = menu
@@ -838,16 +838,6 @@ function sA:EditAura(id)
           b:SetScript("OnClick", function()
             ed.typeButton.text:SetText(text)
             aura.type = text
-            -- LibDebuff always targets the current target
-            if text == "LibDebuff" then
-              aura.unit = "Target"
-              simpleAuras.auras[id].unit = "Target"
-            end
-            -- Ignite always targets the current target
-            if text == "Ignite" then
-              aura.unit = "Target"
-              simpleAuras.auras[id].unit = "Target"
-            end
             menu:Hide()
             sA:SaveAura(id)
           end)
@@ -857,8 +847,6 @@ function sA:EditAura(id)
         makeChoice("Cooldown", 3)
         makeChoice("Reactive", 4)
         makeChoice("Poison", 5)
-        makeChoice("LibDebuff", 6)
-        makeChoice("Ignite", 7)
       end
       local menu = ed.typeButton.menu
       if menu:IsVisible() then menu:Hide() else menu:Show() end
@@ -1239,28 +1227,6 @@ function sA:EditAura(id)
 		if ed.unitButton.menu then
 		  ed.unitButton.menu = nil
 		end
-	elseif aura.type == "LibDebuff" then
-		-- LibDebuff: target-only, no unit dropdown, no invert, no dual
-		ed.unitLabel:Hide()
-		ed.unitButton:Hide()
-		ed.invert:Hide()
-		ed.invertLabel:Hide()
-		ed.dual:Hide()
-		ed.dualLabel:Hide()
-		ed.showCD:Hide()
-		ed.equipped:Hide()
-		ed.equippedLabel:Hide()
-	elseif aura.type == "Ignite" then
-		-- Ignite: target-only, no unit dropdown, no invert, no dual, no CD options
-		ed.unitLabel:Hide()
-		ed.unitButton:Hide()
-		ed.invert:Hide()
-		ed.invertLabel:Hide()
-		ed.dual:Hide()
-		ed.dualLabel:Hide()
-		ed.showCD:Hide()
-		ed.equipped:Hide()
-		ed.equippedLabel:Hide()
 	else
 		-- Buff/Debuff: show all options
 		if ed.unitLabel then ed.unitLabel:Show() end
@@ -1352,9 +1318,6 @@ function sA:EditAura(id)
   ed.stacks.value = aura.stacks or 0
   if ed.stacks.value == 1 then ed.stacks.checked:Show() else ed.stacks.checked:Hide() end
   ed.stacksSize:SetText(aura.stacksSize or 14)
-  -- Reset labels to defaults (Ignite uses all three fields directly)
-  ed.durationLabel:SetText("Show Duration")
-  ed.stacksLabel:SetText("Show Stacks")
 
   ed.lowduration.value = aura.lowduration or 0
   if ed.lowduration.value == 1 then ed.lowduration.checked:Show() else ed.lowduration.checked:Hide() end
