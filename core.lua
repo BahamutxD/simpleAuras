@@ -467,9 +467,121 @@ function sA:UpdateReactiveData()
 end
 
 -------------------------------------------------
+-- Update MageFire aura data (Scorch / Ignite tracking)
+-- Reads sA.mfScorch* / sA.mfIgnite* state tables and writes
+-- into sA.activeAuras[id] so UpdateAuras() can render them.
+-- Called by: sADataUpdate OnUpdate (at simpleAuras.refresh rate)
+-- Requires: SuperWoW (UNIT_CASTEVENT with full GUID/spellID data)
+--
+-- Aura subtypes (stored in aura.mfSubtype):
+--   "Scorch"  → stacks = Fire Vulnerability stacks, duration = time since last hit
+--   "Ignite"  → stacks = Ignite stacks, duration = time remaining on ignite
+--               damagetext = last Ignite tick damage (shown as third text line)
+-------------------------------------------------
+local MF_SCORCH_DURATION  = 30   -- Fire Vulnerability lasts 30s from last application
+local MF_IGNITE_DURATION2 = 4    -- Ignite refreshes every 4 seconds
+
+function sA:UpdateMageFireData()
+  if not simpleAuras or not simpleAuras.auras then return end
+
+  -- Get the current target's GUID (MageFire only tracks Target unit)
+  local _, targetGUID = UnitExists("target")
+  if targetGUID then targetGUID = gsub(targetGUID, "^0x", "") end
+
+  local currentTime = GetTime()
+
+  for id, aura in ipairs(simpleAuras.auras) do
+    if aura and aura.name and aura.name ~= "" and aura.type == "MageFire" then
+
+      sA.activeAuras[id] = sA.activeAuras[id] or {
+        active = false, expiry = nil, stacks = 0,
+        damage = nil, icon = nil, lastScan = 0
+      }
+
+      local cache = sA.activeAuras[id]
+      cache.lastScan = currentTime
+
+      -- Auto-detect icon from spellbook if autodetect is on
+      if aura.autodetect == 1 and (not aura.texture or aura.texture == "Interface\\Icons\\INV_Misc_QuestionMark") then
+        local i = 1
+        while true do
+          local n = GetSpellName(i, "spell")
+          if not n then break end
+          if n == aura.name then
+            local tex = GetSpellTexture(i, "spell")
+            if tex then aura.texture = tex; simpleAuras.auras[id].texture = tex end
+            break
+          end
+          i = i + 1
+        end
+      end
+
+      local subtype = aura.mfSubtype or "Scorch"
+
+      if subtype == "Scorch" then
+        -- Show when Fire Vulnerability debuff is on current target
+        if targetGUID and sA.mfScorchStacks[targetGUID] and sA.mfScorchTimer[targetGUID] then
+          local elapsed  = currentTime - sA.mfScorchTimer[targetGUID]
+          local remaining = MF_SCORCH_DURATION - elapsed
+          if remaining > 0 then
+            cache.active  = true
+            cache.expiry  = currentTime + remaining
+            cache.stacks  = sA.mfScorchStacks[targetGUID] or 0
+            cache.damage  = nil
+          else
+            -- Expired
+            cache.active  = false
+            cache.expiry  = nil
+            cache.stacks  = 0
+            cache.damage  = nil
+          end
+        else
+          cache.active = false
+          cache.expiry = nil
+          cache.stacks = 0
+          cache.damage = nil
+        end
+
+      elseif subtype == "Ignite" then
+        -- Show when Ignite debuff is on current target
+        if targetGUID and sA.mfIgniteStacks[targetGUID] and sA.mfIgniteTimer[targetGUID] then
+          local elapsed   = currentTime - sA.mfIgniteTimer[targetGUID]
+          local remaining = MF_IGNITE_DURATION2 - elapsed
+          if remaining > 0 then
+            cache.active  = true
+            cache.expiry  = currentTime + remaining
+            cache.stacks  = sA.mfIgniteStacks[targetGUID] or 0
+            cache.damage  = sA.mfIgniteDamage[targetGUID]
+          else
+            -- Ignite expired
+            cache.active  = false
+            cache.expiry  = nil
+            cache.stacks  = 0
+            cache.damage  = nil
+          end
+        else
+          cache.active = false
+          cache.expiry = nil
+          cache.stacks = 0
+          cache.damage = nil
+        end
+      end
+    end
+  end
+end
+
+-------------------------------------------------
 -- SuperWoW-aware aura search
 -------------------------------------------------
+local VALID_UNITS = {
+  ["player"]=true,["target"]=true,["Player"]=true,["Target"]=true,
+  ["focus"]=true,["mouseover"]=true,["pet"]=true,
+  ["party1"]=true,["party2"]=true,["party3"]=true,["party4"]=true,
+}
+
 local function find_aura(name, unit, auratype, myCast)
+  -- Safety: never call UnitDebuff/UnitBuff with an invalid unit token
+  if not unit or not VALID_UNITS[unit] then return false end
   local found, foundstacks, foundsid, foundrem, foundtex
   local function search(is_debuff)
     local i = (unit == "Player") and 0 or 1
@@ -616,6 +728,12 @@ local function CreateAuraFrame(id)
   f.stackstext:SetFont(FONT, 10, "OUTLINE")
   f.stackstext:SetPoint("CENTER", f, "CENTER", 0, 0)
 
+  -- MageFire: third text element for ignite tick damage
+  f.damagetext = f:CreateFontString(nil, "OVERLAY", "GameFontWhite")
+  f.damagetext:SetFont(FONT, 9, "OUTLINE")
+  f.damagetext:SetPoint("BOTTOM", f, "BOTTOM", 0, 2)
+  f.damagetext:Hide()
+
   return f
 end
 
@@ -715,8 +833,8 @@ function sA:UpdateAuraDataForUnit(unitFilter)
   local currentTime = GetTime()
   
   for id, aura in ipairs(simpleAuras.auras) do
-    -- Only process auras for this unit (skip Cooldown, Reactive, and Poison - they have their own handlers)
-    if aura and aura.name and aura.name ~= "" and aura.unit == unitFilter and aura.type ~= "Cooldown" and aura.type ~= "Reactive" and aura.type ~= "Poison" then
+    -- Only process auras for this unit (skip Cooldown, Reactive, Poison, and MageFire - they have their own handlers)
+    if aura and aura.name and aura.name ~= "" and aura.unit == unitFilter and aura.type ~= "Cooldown" and aura.type ~= "Reactive" and aura.type ~= "Poison" and aura.type ~= "MageFire" then
       
       -- Initialize cache entry
       sA.activeAuras[id] = sA.activeAuras[id] or {
@@ -933,9 +1051,39 @@ function sA:UpdateAuras()
                 duration = nil
                 stacks = 0
               end
+            elseif aura.type == "MageFire" then
+              -- MageFire: Scorch/Ignite tracking via SuperWoW combat log
+              local auraData = sA.activeAuras[id]
+              if auraData and auraData.active then
+                icon     = aura.texture
+                if auraData.expiry then
+                  duration = auraData.expiry - GetTime()
+                  if duration <= 0 then duration = nil end
+                else
+                  duration = nil
+                end
+                stacks = auraData.stacks or 0
+              else
+                icon = nil; duration = nil; stacks = 0
+              end
             else
+              -- MageFire: use cached data, never call the API
+              if aura.type == "MageFire" then
+                local auraData = sA.activeAuras[id]
+                if auraData and auraData.active then
+                  icon     = aura.texture
+                  if auraData.expiry then
+                    duration = auraData.expiry - GetTime()
+                    if duration <= 0 then duration = nil end
+                  else
+                    duration = nil
+                  end
+                  stacks = auraData.stacks or 0
+                else
+                  icon = nil; duration = nil; stacks = 0
+                end
               -- Buff/Debuff/Cooldown: get from API
-              if sA.SuperWoW then
+              elseif sA.SuperWoW then
                   spellID, icon, duration, stacks = self:GetSuperAuraInfos(aura.name, aura.unit, aura.type, aura.myCast)
               else
                   icon, duration, stacks = self:GetAuraInfos(aura.name, aura.unit, aura.type)
@@ -948,8 +1096,8 @@ function sA:UpdateAuras()
             if aura.type == "Cooldown" then
               local onCooldown = duration and duration > 0
               show = (((aura.showCD == "No CD" or aura.showCD == "Always") and not onCooldown) or ((aura.showCD == "CD" or aura.showCD == "Always") and onCooldown)) and 1 or 0
-            elseif aura.type == "Reactive" or aura.type == "Poison" then
-              -- For reactive spells and poisons: show when present
+            elseif aura.type == "Reactive" or aura.type == "Poison" or aura.type == "MageFire" then
+              -- Show when present (no inversion for these event-driven types)
               show = auraIsPresent
             elseif aura.invert == 1 then
               show = 1 - auraIsPresent
@@ -991,7 +1139,20 @@ function sA:UpdateAuras()
             end
             stacks = auraData.stacks or 0
           end
-        elseif not (icon or aura.name) then -- Data might not have been fetched in /sa mode
+        elseif aura.type == "MageFire" then
+          -- MageFire: use cached data from UpdateMageFireData (SuperWoW only)
+          local auraData = sA.activeAuras[id]
+          if auraData and auraData.active then
+            icon = aura.texture
+            if auraData.expiry then
+              duration = auraData.expiry - GetTime()
+              if duration <= 0 then duration = nil end
+            else
+              duration = nil
+            end
+            stacks = auraData.stacks or 0
+          end
+        elseif aura.type ~= "MageFire" and not (icon or aura.name) then -- Data might not have been fetched in /sa mode
 		  spellID = nil
           if sA.SuperWoW then
             spellID, icon, duration, stacks = self:GetSuperAuraInfos(aura.name, aura.unit, aura.type)
@@ -1006,6 +1167,10 @@ function sA:UpdateAuras()
           if aura.autodetect == 1 and aura.texture ~= icon then
               aura.texture, simpleAuras.auras[id].texture = icon, icon
           end
+        elseif aura.type == "MageFire" then
+          -- MageFire has no API icon; drive display from cache directly
+          currentDuration = duration
+          currentStacks   = stacks
         end
         
         -------------------------------------------------
@@ -1048,11 +1213,20 @@ function sA:UpdateAuras()
         end
         
         frame.texture:SetTexture(textureToUse)
-        frame.durationtext:SetText((aura.duration == 1 and (sA.SuperWoW or aura.unit == "Player" or aura.type == "Cooldown" or aura.type == "Reactive" or aura.type == "Poison")) and currentDurationtext or "")
+        frame.durationtext:SetText((aura.duration == 1 and (sA.SuperWoW or aura.unit == "Player" or aura.type == "Cooldown" or aura.type == "Reactive" or aura.type == "Poison" or aura.type == "MageFire")) and currentDurationtext or "")
         frame.stackstext:SetText((aura.stacks == 1) and currentStacks or "")
         
         -- Position duration and stacks based on settings
-        if aura.duration == 1 and aura.stacks == 1 then
+        if aura.type == "MageFire" and aura.mfSubtype == "Ignite"
+            and aura.duration == 1 and aura.stacks == 1 then
+          -- Three-row layout: duration top, stacks middle, damage bottom
+          local durationFontSize = (aura.durationSize or 20) * textscale
+          local stacksFontSize   = (aura.stacksSize   or 14) * scale
+          frame.durationtext:SetFont(FONT, durationFontSize, "OUTLINE")
+          frame.stackstext:SetFont(FONT, stacksFontSize, "OUTLINE")
+          frame.durationtext:SetPoint("CENTER", frame, "CENTER", 0, 14 * scale)
+          frame.stackstext:SetPoint("CENTER", frame, "CENTER", 0, 0)
+        elseif aura.duration == 1 and aura.stacks == 1 then
           -- Both enabled: move duration up, stacks down
           frame.durationtext:SetPoint("CENTER", frame, "CENTER", 0, 8)
           frame.stackstext:SetPoint("CENTER", frame, "CENTER", 0, -8)
@@ -1098,17 +1272,36 @@ function sA:UpdateAuras()
 
         local durationcolor = {1.0, 0.82, 0.0, alpha}
         local stackcolor    = {1, 1, 1, alpha}
-        if (sA.SuperWoW or aura.unit == "Player" or aura.type == "Cooldown" or aura.type == "Reactive" or aura.type == "Poison") and (currentDuration and currentDuration <= (aura.lowdurationvalue or 5)) and currentDurationtext ~= "learning" then
+        if (sA.SuperWoW or aura.unit == "Player" or aura.type == "Cooldown" or aura.type == "Reactive" or aura.type == "Poison" or aura.type == "MageFire") and (currentDuration and currentDuration <= (aura.lowdurationvalue or 5)) and currentDurationtext ~= "learning" then
           durationcolor = {1, 0, 0, alpha}
         end
         frame.durationtext:SetTextColor(unpack(durationcolor))
         frame.stackstext:SetTextColor(unpack(stackcolor))
+
+        -- MageFire: third text line shows last Ignite tick damage at bottom of icon
+        if aura.type == "MageFire" and aura.mfSubtype == "Ignite" and frame.damagetext then
+          local auraData = sA.activeAuras[id]
+          local dmg = auraData and auraData.damage
+          if dmg and dmg > 0 then
+            local dmgFontSize = (aura.stacksSize or 14) * scale
+            frame.damagetext:SetFont(FONT, dmgFontSize, "OUTLINE")
+            frame.damagetext:SetText(dmg)
+            frame.damagetext:SetTextColor(1, 0.5, 0, alpha)
+            frame.damagetext:SetPoint("CENTER", frame, "CENTER", 0, -14 * scale)
+            frame.damagetext:Show()
+          else
+            frame.damagetext:Hide()
+          end
+        elseif frame.damagetext then
+          frame.damagetext:Hide()
+        end
+
         frame:Show()
 
         -------------------------------------------------
         -- Dual frame
         -------------------------------------------------
-        if aura.dual == 1 and aura.type ~= "Cooldown" and aura.type ~= "Reactive" and aura.type ~= "Poison" and dualframe then
+        if aura.dual == 1 and aura.type ~= "Cooldown" and aura.type ~= "Reactive" and aura.type ~= "Poison" and aura.type ~= "MageFire" and dualframe then
           dualframe:SetPoint("CENTER", UIParent, "CENTER", -(aura.xpos or 0), aura.ypos or 0)
           dualframe:SetFrameLevel(aura.layer or 0)
           dualframe:SetWidth(48 * scale)
@@ -1119,7 +1312,7 @@ function sA:UpdateAuras()
           else
             dualframe.texture:SetVertexColor(r, g, b, alpha)
           end
-          dualframe.durationtext:SetText((aura.duration == 1 and (sA.SuperWoW or aura.unit == "Player" or aura.type == "Cooldown" or aura.type == "Reactive" or aura.type == "Poison")) and currentDurationtext or "")
+          dualframe.durationtext:SetText((aura.duration == 1 and (sA.SuperWoW or aura.unit == "Player" or aura.type == "Cooldown" or aura.type == "Reactive" or aura.type == "Poison" or aura.type == "MageFire")) and currentDurationtext or "")
           dualframe.stackstext:SetText((aura.stacks == 1) and currentStacks or "")
           
           -- Position duration and stacks based on settings (same as main frame)
@@ -1153,6 +1346,7 @@ function sA:UpdateAuras()
       else
         if frame     then frame:Hide()     end
         if dualframe then dualframe:Hide() end
+        if frame and frame.damagetext then frame.damagetext:Hide() end
       end
     else
       -- This is a new/empty aura, make sure its frame is hidden if it exists

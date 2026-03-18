@@ -7,5 +7,6 @@
 init.lua
 core.lua
 gui.lua
+simpleAuras_MageFire.lua
 libs\libdebuff_integration.lua
 

@@ -37,8 +37,15 @@ sA = sA or {
   dualframes = {}, 
   draggers = {}, 
   activeAuras = {},
-  reactiveTimers = {},      -- [spellName] = {expiry, warnedOnce}
-  itemIDCache = {}          -- [itemName] = itemID (for cooldown tracking)
+  reactiveTimers = {},
+  itemIDCache = {},
+  -- MageFire: per-target state written by simpleAuras_MageFire.lua
+  mfScorchStacks = {},  -- [guid] = Fire Vulnerability stack count
+  mfScorchTimer  = {},  -- [guid] = GetTime() of last application
+  mfIgniteStacks = {},  -- [guid] = Ignite stack count
+  mfIgniteTimer  = {},  -- [guid] = GetTime() of last crit/tick
+  mfIgniteDamage = {},  -- [guid] = last Ignite tick damage
+  mfIgniteOwner  = {},  -- [guid] = caster guid
 }
 
 -- Get version from .toc file
@@ -340,6 +347,7 @@ sADataUpdate:SetScript("OnUpdate", function()
   -- Update cooldown and reactive states (poison has its own 3-second timer)
   sA:UpdateCooldownData()
   sA:UpdateReactiveData()
+  if sA.UpdateMageFireData then sA:UpdateMageFireData() end
 end)
 
 -- Poison data updates (fixed 3-second interval, independent of refresh rate)

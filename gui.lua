@@ -419,9 +419,20 @@ function sA:SaveAura(id)
   data.lowdurationvalue= tonumber(ed.lowdurationvalue:GetText())
   data.lowdurationcolor= ed.lowdurationcolor
   data.type            = ed.typeButton.text:GetText()
-  data.unit            = ed.unitButton.text:GetText()
+  -- For MageFire the unit button is hidden; force unit to "Target" so
+  -- UpdateAuraDataForUnit never tries to call UnitDebuff with the aura name.
+  if data.type == "MageFire" then
+    data.unit = "Target"
+  else
+    data.unit = ed.unitButton.text:GetText()
+  end
   data.showCD          = ed.showCD.text:GetText()
   data.equipped        = ed.equipped.value
+  -- MageFire subtype (only meaningful when type == "MageFire")
+  if ed.mfSubtypeButton then
+    data.mfSubtype = ed.mfSubtypeButton.text:GetText()
+    if data.mfSubtype == "" then data.mfSubtype = "Scorch" end
+  end
   data.inCombat        = ed.inCombat.value
   data.outCombat       = ed.outCombat.value
   data.inRaid          = ed.inRaid.value
@@ -820,7 +831,7 @@ function sA:EditAura(id)
         menu:SetFrameStrata("DIALOG")
         menu:SetFrameLevel(10)
         menu:SetWidth(80)
-        menu:SetHeight(100)
+        menu:SetHeight(120)
         sA:SkinFrame(menu, {0.15,0.15,0.15,1})
         menu:Hide()
         ed.typeButton.menu = menu
@@ -847,6 +858,7 @@ function sA:EditAura(id)
         makeChoice("Cooldown", 3)
         makeChoice("Reactive", 4)
         makeChoice("Poison", 5)
+        makeChoice("MageFire", 6)
       end
       local menu = ed.typeButton.menu
       if menu:IsVisible() then menu:Hide() else menu:Show() end
@@ -920,6 +932,58 @@ function sA:EditAura(id)
 	  if menu:IsVisible() then menu:Hide() else menu:Show() end
 	end)
 	
+	-- MageFire subtype dropdown (Scorch / Ignite) — only visible when type == "MageFire"
+	ed.mfSubtypeLabel = ed:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	ed.mfSubtypeLabel:SetPoint("LEFT", ed.typeButton, "RIGHT", 10, 0)
+	ed.mfSubtypeLabel:SetText("Track:")
+
+	ed.mfSubtypeButton = CreateFrame("Button", nil, ed)
+	ed.mfSubtypeButton:SetWidth(60)
+	ed.mfSubtypeButton:SetHeight(20)
+	ed.mfSubtypeButton:SetPoint("LEFT", ed.mfSubtypeLabel, "RIGHT", 5, 0)
+	sA:SkinFrame(ed.mfSubtypeButton, {0.2,0.2,0.2,1})
+	ed.mfSubtypeButton.text = ed.mfSubtypeButton:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	ed.mfSubtypeButton.text:SetPoint("CENTER", ed.mfSubtypeButton, "CENTER", 0, 0)
+	ed.mfSubtypeButton:SetScript("OnEnter", function() ed.mfSubtypeButton:SetBackdropColor(0.5,0.5,0.5,1) end)
+	ed.mfSubtypeButton:SetScript("OnLeave", function() ed.mfSubtypeButton:SetBackdropColor(0.2,0.2,0.2,1) end)
+	ed.mfSubtypeButton:SetScript("OnClick", function()
+	  if not ed.mfSubtypeButton.menu then
+		local menu = CreateFrame("Frame", nil, ed)
+		menu:SetPoint("TOPLEFT", ed.mfSubtypeButton, "BOTTOMLEFT", 0, -2)
+		menu:SetFrameStrata("DIALOG")
+		menu:SetFrameLevel(10)
+		menu:SetWidth(60)
+		menu:SetHeight(40)
+		sA:SkinFrame(menu, {0.15,0.15,0.15,1})
+		menu:Hide()
+		ed.mfSubtypeButton.menu = menu
+		local function makeSubChoice(text, index)
+		  local b = CreateFrame("Button", nil, menu)
+		  b:SetWidth(60)
+		  b:SetHeight(20)
+		  b:SetPoint("TOPLEFT", menu, "TOPLEFT", 0, -((index-1)*20))
+		  sA:SkinFrame(b, {0.2,0.2,0.2,1})
+		  b.text = b:CreateFontString(nil, "OVERLAY", "GameFontWhite")
+		  b.text:SetPoint("CENTER", b, "CENTER", 0, 0)
+		  b.text:SetText(text)
+		  b:SetScript("OnEnter", function() b:SetBackdropColor(0.5,0.5,0.5,1) end)
+		  b:SetScript("OnLeave", function() b:SetBackdropColor(0.2,0.2,0.2,1) end)
+		  b:SetScript("OnClick", function()
+			ed.mfSubtypeButton.text:SetText(text)
+			aura.mfSubtype = text
+			menu:Hide()
+			sA:SaveAura(id)
+		  end)
+		end
+		makeSubChoice("Scorch", 1)
+		makeSubChoice("Ignite", 2)
+	  end
+	  local menu = ed.mfSubtypeButton.menu
+	  if menu:IsVisible() then menu:Hide() else menu:Show() end
+	end)
+	ed.mfSubtypeLabel:Hide()
+	ed.mfSubtypeButton:Hide()
+
 	-- Equipped checkbox (for Cooldown items like trinkets) - between Type and Always
 	ed.equipped = CreateFrame("Button", nil, ed)
 	ed.equipped:SetWidth(16)
@@ -1202,6 +1266,8 @@ function sA:EditAura(id)
 		ed.showCD:Show()
 		ed.equipped:Show()
 		ed.equippedLabel:Show()
+		ed.mfSubtypeLabel:Hide()
+		ed.mfSubtypeButton:Hide()
 	elseif aura.type == "Reactive" then
 		ed.unitLabel:Hide()
 		ed.unitButton:Hide()
@@ -1212,6 +1278,8 @@ function sA:EditAura(id)
 		ed.showCD:Hide()
 		ed.equipped:Hide()
 		ed.equippedLabel:Hide()
+		ed.mfSubtypeLabel:Hide()
+		ed.mfSubtypeButton:Hide()
 	elseif aura.type == "Poison" then
 		-- Poison: show Unit dropdown (MH/OH), hide some options
 		if ed.unitLabel then ed.unitLabel:Show() end
@@ -1223,10 +1291,25 @@ function sA:EditAura(id)
 		ed.showCD:Hide()
 		ed.equipped:Hide()
 		ed.equippedLabel:Hide()
+		ed.mfSubtypeLabel:Hide()
+		ed.mfSubtypeButton:Hide()
 		-- Rebuild menu for Poison type
 		if ed.unitButton.menu then
 		  ed.unitButton.menu = nil
 		end
+	elseif aura.type == "MageFire" then
+		-- MageFire: show subtype picker, hide unit/invert/dual/showCD/equipped
+		ed.unitLabel:Hide()
+		ed.unitButton:Hide()
+		ed.invert:Hide()
+		ed.invertLabel:Hide()
+		ed.dual:Hide()
+		ed.dualLabel:Hide()
+		ed.showCD:Hide()
+		ed.equipped:Hide()
+		ed.equippedLabel:Hide()
+		ed.mfSubtypeLabel:Show()
+		ed.mfSubtypeButton:Show()
 	else
 		-- Buff/Debuff: show all options
 		if ed.unitLabel then ed.unitLabel:Show() end
@@ -1238,6 +1321,8 @@ function sA:EditAura(id)
 		ed.showCD:Hide()
 		ed.equipped:Hide()
 		ed.equippedLabel:Hide()
+		ed.mfSubtypeLabel:Hide()
+		ed.mfSubtypeButton:Hide()
 	end
 
     -- Delete / Close / Copy buttons
@@ -1331,6 +1416,10 @@ function sA:EditAura(id)
   end
   if ed.showCD then
 	ed.showCD.text:SetText(aura.showCD or "Always")
+  end
+  -- MageFire subtype
+  if ed.mfSubtypeButton then
+    ed.mfSubtypeButton.text:SetText(aura.mfSubtype or "Scorch")
   end
   ed.equipped.value = aura.equipped or 0
   if ed.equipped.value == 1 then ed.equipped.checked:Show() else ed.equipped.checked:Hide() end
